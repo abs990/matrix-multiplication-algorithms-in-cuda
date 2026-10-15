@@ -62,8 +62,32 @@ void launch_matmul_naive(const float* A, const float* B, float* C, int M, int N,
     matmul_naive_kernel<<<grid, block>>>(A, B, C, M, N, K);
 }
 
-# Step 4 - matmul_coalesced_kernel (not yet solved)
-# TODO: implement
+# Step 4 - matmul_coalesced_kernel
+#include <cuda_runtime.h>
+
+__global__ void matmul_coalesced_kernel(const float* A, const float* B, float* C, int M, int N, int K) {
+    // col from threadIdx.x, row from threadIdx.y, guard, accumulate over k, store
+
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if(row < M && col < N) {
+        float sum = 0.0f;
+        for(int k_i = 0 ; k_i < K ; k_i++) {
+            sum += A[row * K + k_i] * B[k_i * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+
+void launch_matmul_coalesced(const float* A, const float* B, float* C, int M, int N, int K) {
+    // 16x16 blocks, grid ((N+15)/16, (M+15)/16)
+
+    dim3 block(16, 16);
+    dim3 grid((N+15)/16, (M+15)/16);
+
+    matmul_coalesced_kernel<<<grid, block>>>(A, B, C, M, N, K);
+}
 
 # Step 5 - time_launch_ms (not yet solved)
 # TODO: implement
