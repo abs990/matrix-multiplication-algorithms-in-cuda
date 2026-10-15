@@ -89,8 +89,51 @@ void launch_matmul_coalesced(const float* A, const float* B, float* C, int M, in
     matmul_coalesced_kernel<<<grid, block>>>(A, B, C, M, N, K);
 }
 
-# Step 5 - time_launch_ms (not yet solved)
-# TODO: implement
+# Step 5 - time_launch_ms
+#include <cuda_runtime.h>
+
+typedef void (*matmul_launch_fn)(const float*, const float*, float*, int, int, int);
+
+float time_launch_ms(matmul_launch_fn launch, const float* dA, const float* dB, float* dC, int M, int N, int K, int iters) {
+
+    dim3 block(16, 16);
+    dim3 grid((M + 15) / 16, (N + 15) / 16);
+
+    // warm-up launch
+    launch<<<grid, block>>>(dA, dB, dC, M, N, K);
+
+    // sync
+    cudaDeviceSynchronize();
+    
+    // create events
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // record event
+    cudaEventRecord(start);
+    
+    // iters launches
+    for(int iter = 0 ; iter < iters ; iter++) {
+        launch<<<grid, block>>>(dA, dB, dC, M, N, K);
+    }
+
+    // record event
+    cudaEventRecord(stop);
+
+    // sync
+    cudaEventSynchronize(stop);
+
+    // return elapsed / iters
+    float milliseconds = 0.0f;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    return milliseconds / iters;
+}
+
+double matmul_gflops(int M, int N, int K, float ms) {
+    // 2*M*N*K flops over ms milliseconds, in GFLOP/s
+    return 2e-6 * M * N * K / ms;
+}
 
 # Step 6 - matmul_tiled_kernel (not yet solved)
 # TODO: implement
