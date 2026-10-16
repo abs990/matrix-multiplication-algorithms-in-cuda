@@ -135,8 +135,63 @@ double matmul_gflops(int M, int N, int K, float ms) {
     return 2e-6 * M * N * K / ms;
 }
 
-# Step 6 - matmul_tiled_kernel (not yet solved)
-# TODO: implement
+# Step 6 - matmul_tiled_kernel
+#include <cuda_runtime.h>
+
+constexpr int TILE_SMEM = 16;
+
+__global__ void matmul_tiled_kernel(const float* A, const float* B, float* C, int M, int N, int K) {
+    // __shared__ As[TILE][TILE], Bs[TILE][TILE]
+    __shared__ float As[TILE_SMEM][TILE_SMEM];
+    __shared__ float Bs[TILE_SMEM][TILE_SMEM];
+
+    int ty = threadIdx.y;
+    int tx = threadIdx.x;
+
+    int row = blockIdx.y * TILE_SMEM + ty;
+    int col = blockIdx.x * TILE_SMEM + tx;
+
+    float sum = 0.0f;
+
+    // Loop over tiles along the K dimension    
+    // for (int tile = 0; tile < (K + TILE_SMEM - 1) / TILE_SMEM; ++tile) {
+    for (int kBase = 0; kBase < K; kBase += TILE_SMEM) {
+        // Columns of A and rows of B for this tile
+        // int aCol = tile * TILE_SMEM + tx;
+        // int bRow = tile * TILE_SMEM + ty;
+        int aCol = kBase + tx;
+        int bRow = kBase + ty;
+
+        // Load into shared memory - column of A and row of B
+        As[ty][tx] = row < M && aCol < K ? A[row * K + aCol] : 0.0f;
+        Bs[ty][tx] = bRow < K && col < N ? B[bRow * N + col] : 0.0f;
+
+        // Wait for threads to finished shared mem load
+        __syncthreads();
+
+        // Accumulate partial dot product
+        for(int k = 0 ; k < TILE_SMEM ; k++) {
+            sum += As[ty][k] * Bs[k][tx];
+        }
+
+        // Ensure all threads have finished before the next tile loads
+        __syncthreads();
+    }    
+
+    // Store
+    if(row < M && col < N) {
+        C[row * N + col] = sum;
+    }
+}
+
+void launch_matmul_tiled(const float* A, const float* B, float* C, int M, int N, int K) {
+    // 16x16 blocks, grid ((N+15)/16, (M+15)/16)
+
+    dim3 block(16, 16);
+    dim3 grid((N+15)/16, (M+15)/16);
+
+    matmul_tiled_kernel<<<grid, block>>>(A, B, C, M, N, K);
+}
 
 # Step 7 - matmul_tiled_1d_kernel (not yet solved)
 # TODO: implement
