@@ -280,8 +280,116 @@ void launch_matmul_tiled_1d(const float* A, const float* B, float* C, int M, int
     matmul_tiled_1d_kernel<<<grid, block>>>(A, B, C, M, N, K);
 }
 
-# Step 8 - matmul_tiled_2d_kernel (not yet solved)
-# TODO: implement
+# Step 8 - matmul_tiled_2d_kernel
+#include <cuda_runtime.h>
+
+constexpr int R2_BM = 64, R2_BN = 64, R2_BK = 8, R2_TM = 4, R2_TN = 4;
+constexpr int TX_M = R2_BM / R2_TM; // 16
+constexpr int TX_N = R2_BN / R2_TN; // 16
+constexpr int R2_THREADS = TX_M * TX_N; // 256
+
+__global__ void matmul_tiled_2d_kernel(const float* A, const float* B, float* C, int M, int N, int K) {
+    // shared tiles; thread rows (tid/16)*4.., cols (tid%16)*4..; strided guarded loads of 2 A and 2 B elements per thread
+    // per k: regA[4] from As, regB[4] from Bs, 16 FMAs; guarded 4x4 store
+
+    __shared__ float As[R2_BM * R2_BK];
+    __shared__ float Bs[R2_BK * R2_BN];
+
+    // thread owns rows (tid / 16) * 4 .. and columns (tid % 16) * 4 ..
+    int tid = threadIdx.x;
+
+    const int ty = tid / TX_N;  // Logical output row
+    const int tx = tid % TX_N;  // Logical column group
+
+    // output row, col
+    int row = blockIdx.y * R2_BM + ty * R2_TM;
+    int col = blockIdx.x * R2_BN + tx * R2_TN;
+
+    float acc[R2_TM][R2_TN] = {0.0f};
+    float regA[R2_TM];
+    float regB[R2_TN];
+
+    // Process the reduction dimension in BK-sized tiles.
+    for (int k0 = 0; k0 < K; k0 += R2_BK) {
+
+        // Cooperatively load A tile: BM x BK.
+        for (int idx = tid; idx < R2_BM * R2_BK; idx += R2_THREADS) {
+            const int ar = idx / R2_BK;
+            const int ak = idx % R2_BK;
+
+            const int gr = blockIdx.y * R2_BM + ar;
+            const int gk = k0 + ak;
+
+            As[ar * R2_BK + ak] = (gr < M && gk < K) ? A[gr * K + gk] : 0.0f;            
+        }
+
+        // Cooperatively load A tile: BK x BN.
+        for (int idx = tid; idx < R2_BK * R2_BN; idx += R2_THREADS) {
+            const int bk = idx / R2_BN;
+            const int bn = idx % R2_BN;
+
+            const int gr = k0 + bk;
+            const int gc = blockIdx.x * R2_BN + bn;
+
+            Bs[bk * R2_BN + bn] = (gr < K && gc < N) ? B[gr * N + gc] : 0.0f;
+        }        
+
+        // sync
+        __syncthreads();
+
+        // Compute all 8 reduction terms.
+        #pragma unroll
+        for (int kk = 0; kk < R2_BK; ++kk) {
+
+            #pragma unroll
+            for (int i = 0; i < R2_TM; ++i) {
+                regA[i] = As[(ty * R2_TM + i) * R2_BK + kk];
+            }
+
+            #pragma unroll
+            for (int j = 0; j < R2_TN; ++j) {
+                regB[j] = Bs[kk * R2_BN + tx * R2_TN + j];
+            }
+
+            #pragma unroll
+            for (int i = 0; i < R2_TM; ++i) {
+                #pragma unroll
+                for (int j = 0; j < R2_TN; ++j) {
+                    acc[i][j] = fmaf(
+                        regA[i], regB[j], acc[i][j]);
+                }
+            }
+        }
+
+        // sync
+        __syncthreads();
+    }
+
+    // store result to output
+    if(row < M && col < N) {
+        #pragma unroll
+        for(int i = 0 ; i < R2_TM ; i++) {
+            const int r = row + i;
+            #pragma unroll
+            for(int j = 0; j < R2_TN ; j++) {
+                const int c = col + j;
+                if(r < M && c < N) {
+                    C[r * N + c] = acc[i][j];
+                }
+            }
+        }
+    }
+}
+
+void launch_matmul_tiled_2d(const float* A, const float* B, float* C, int M, int N, int K) {
+    dim3 block(R2_THREADS);
+    dim3 grid(
+        (N + R2_BN - 1) / R2_BN,
+        (M + R2_BM - 1) / R2_BM
+    );
+
+    matmul_tiled_2d_kernel<<<grid, block>>>(A, B, C, M, N, K);
+}
 
 # Step 9 - matmul_vectorized_kernel (not yet solved)
 # TODO: implement
